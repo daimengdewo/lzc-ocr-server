@@ -25,11 +25,12 @@ cls_model_dir = '.\\cls_model'
 async def ocrIdCard(id_card_images: IdCardImages):
     PaddleOCR(det_model_dir=det_model_dir, rec_model_dir=rec_model_dir, cls_model_dir=cls_model_dir)
     ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=False, use_mp=True)
+    start_time = time.time()
     idCardFront = id_card_images.idCardFront
     idCardBack = id_card_images.idCardBack
     img_paths = [idCardFront, idCardBack]
     dataList = []
-    start_time = time.time()
+    allStr = ""
     for img_path in img_paths:
         result = ocr.ocr(img_path, cls=True)
         for idx in range(len(result)):
@@ -39,13 +40,14 @@ async def ocrIdCard(id_card_images: IdCardImages):
                 Str = getInformation(data)
                 if Str != '':
                     dataList.append(Str)
+                    allStr = allStr + Str
 
     dataList = pretreatment(dataList)
-    resultDict = findResultReserve(dataList)
+    resultDict = findResultReserve(dataList, allStr)
     end_time = time.time()
     total_time = end_time - start_time
 
-    return {"data": resultDict, "msg": "总耗时：{} 秒".format(total_time), "test": dataList}
+    return {"data": resultDict, "msg": "总耗时：{} 秒".format(total_time), "test": allStr}
 
 
 def getInformation(data):
@@ -105,7 +107,7 @@ def getYxqx(item, keyword, info_dict):
     return info_dict
 
 
-def findResultReserve(data):
+def findResultReserve(data, allStr):
     # 定义正则表达式模式
     patterns = {
         '姓名': r'.*姓名(.*)$',
@@ -114,19 +116,20 @@ def findResultReserve(data):
         '住址': r'.*住址(.*)$',
         '签发机关': r'.*签发机关(.*)$',
         '有效期限': r'.*有效期限(.*)$',
-        '公民身份号码': r'.*公民身份号码(.*)$',
-        "出生": r'.*出生(.*)$'
+        '公民身份号码': r'(\d{17}[\dXx])',
+        "出生": r'.*出生(\d+年\d+月\d+日)'
     }
 
     patterns2 = {
         '出生': r'\d{4}年\d{1,2}月\d{1,2}日',
         '签发机关': r'.*公安局.*',
         '有效期限': r'\d{16}',
-        '公民身份号码': r'\d{17,}'
+        '公民身份号码': r'\d{17,}',
+        '性别': r'(男|女)'
     }
 
     # 创建一个空字典用于存储信息
-    info_dict = {}
+    info_dict = {"姓名": ""}
 
     # 遍历数据列表
     for item in data:
@@ -137,7 +140,6 @@ def findResultReserve(data):
             if match:
                 if key == '有效期限':
                     info_dict = getYxqx(item, key, info_dict)
-                    break
                 else:
                     # 如果匹配成功，截断这个项，然后将信息存储到字典中
                     info = match.group(1)
@@ -146,9 +148,11 @@ def findResultReserve(data):
                     addrs = getAddr(data)
                     for addr in addrs:
                         info_dict["住址"] = info_dict["住址"] + addr
-                if key == "公民身份号码":
-                    info_dict["公民身份号码"] = find_long_number(data)
                 break  # 匹配成功后跳出内层循环
+            elif key == "出生":
+                match = re.search(pattern, allStr)
+                if match:
+                    info_dict[key] = match.group(1).strip()
         # 遍历正则表达式模式字典2
         for key2, pattern2 in patterns2.items():
             # 使用正则表达式匹配对应项
@@ -156,19 +160,25 @@ def findResultReserve(data):
             if match:
                 if key2 == '有效期限':
                     info_dict = getYxqx(item, key2, info_dict)
-                    break
                 else:
                     # 如果匹配成功，直接将信息存储到字典中
                     info_dict[key2] = item
                 break  # 匹配成功后跳出内层循环
+        if len(item) > 17 and item.isdigit():
+            info_dict["公民身份号码"] = item
+
+    if info_dict["姓名"] == "":
+        info_dict["姓名"] = getName(data)
 
     return info_dict
 
 
 def getAddr(data):
     keywords = ["姓名", "民族", "性别", "出生", "住址", "签发机关", "有效期限",
-                "公民身份号码", "中华人民共和国", "居民身份证", "公安局"]
+                "公民身份号码", "中华人民共和国", "居民身份证", "公安局", "年", "月", "日"]
     keywords2 = ["中国"]
+    name = getName(data)
+    keywords.append(name)
 
     filtered_data = [item for item in data if (
             not any(keyword in item for keyword in keywords) and
@@ -178,6 +188,12 @@ def getAddr(data):
     )]
 
     return filtered_data
+
+
+def getName(data):
+    pattern = re.compile(r'^(?!.*姓名).{2,4}$')  # 不包含"姓名"两个字，字符数为2到4的正则表达式
+    name = next((item for item in data if re.match(pattern, item)), None)
+    return name
 
 
 def find_long_number(lst):
