@@ -8,11 +8,9 @@ import uvicorn
 import re
 import uuid
 
-from typing import List
-
 # minio
 minio_client = Minio(
-    'http://10.10.101.2:9000',
+    endpoint='10.10.101.2:9000',
     access_key='minioadmin',
     secret_key='minioadmin',
     secure=False
@@ -39,8 +37,8 @@ async def ocrIdCard(id_card_images: IdCardImages):
     PaddleOCR(det_model_dir=det_model_dir, rec_model_dir=rec_model_dir, cls_model_dir=cls_model_dir)
     ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=False, use_mp=True)
     start_time = time.time()
-    idCardFront = id_card_images.idCardFront
-    idCardBack = id_card_images.idCardBack
+    idCardFront = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardFront)
+    idCardBack = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardBack)
     img_paths = [idCardFront, idCardBack]
     dataList = []
     allStr = ""
@@ -63,25 +61,32 @@ async def ocrIdCard(id_card_images: IdCardImages):
 
 
 # 路由接口，接收上传的文件列表并上传到 MinIO
-@app.post("/upload/")
-async def upload_files(files: List[UploadFile] = File(...)):
+@app.post("/{}{}".format(ocrName, "upload"))
+async def upload_files(idCardFront: UploadFile = File(...), idCardBack: UploadFile = File(...)):
     try:
+        files = [idCardFront, idCardBack]
+        cardIDs = {"idCardFront": "", "idCardBack": ""}
         for file in files:
             # 读取上传的文件内容
             file_content = await file.read()
             # 将文件内容封装为文件对象
             file_object = BytesIO(file_content)
-
+            # 生成文件名
+            cardID = uuid.uuid4()
+            if file.filename == idCardFront.filename:
+                cardIDs['idCardFront'] = cardID
+            else:
+                cardIDs['idCardBack'] = cardID
             # 上传文件到 MinIO
             minio_client.put_object(
                 'lzc-ocr',
-                '/idCard/{}'.format(uuid.uuid4()),
+                '/idCard/{}.jpg'.format(cardID),
                 file_object,
                 length=len(file_content),
                 content_type=file.content_type
             )
 
-        return {"message": "Files uploaded successfully."}
+        return {"data": cardIDs, "message": "Files uploaded successfully."}
     except HTTPException as err:
         raise HTTPException(status_code=500, detail=str(err))
 
