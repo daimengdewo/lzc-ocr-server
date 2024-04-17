@@ -42,8 +42,7 @@ async def ocrIdCard(id_card_images: IdCardImages):
                     dataList.append(Str)
                     allStr = allStr + Str
 
-    dataList = pretreatment(dataList)
-    resultDict = findResultReserve(dataList, allStr)
+    resultDict = findResultReserve(dataList, allStr + "中国")
     end_time = time.time()
     total_time = end_time - start_time
 
@@ -111,7 +110,7 @@ def findResultReserve(data, allStr):
     # 定义正则表达式模式
     patterns = {
         '姓名': r'.*姓名(.*)$',
-        '性别': r'.*性别(.*)$',
+        '性别': r'.*性别(男|女)',
         '民族': r'.*民族(.*)$',
         '住址': r'.*住址(.*)$',
         '签发机关': r'.*签发机关(.*)$',
@@ -123,13 +122,11 @@ def findResultReserve(data, allStr):
     patterns2 = {
         '出生': r'\d{4}年\d{1,2}月\d{1,2}日',
         '签发机关': r'.*公安局.*',
-        '有效期限': r'\d{16}',
-        '公民身份号码': r'\d{17,}',
-        '性别': r'(男|女)'
+        '有效期限': r'\d{16}'
     }
 
-    # 创建一个空字典用于存储信息
-    info_dict = {"姓名": ""}
+    # 预处理
+    info_dict = extract_info(allStr)
 
     # 遍历数据列表
     for item in data:
@@ -138,17 +135,15 @@ def findResultReserve(data, allStr):
             # 使用正则表达式匹配对应项
             match = re.match(pattern, item)
             if match:
-                if key == '有效期限':
-                    info_dict = getYxqx(item, key, info_dict)
-                else:
-                    # 如果匹配成功，截断这个项，然后将信息存储到字典中
-                    info = match.group(1)
-                    info_dict[key] = info
+                # 如果匹配成功，截断这个项，然后将信息存储到字典中
+                info = match.group(1)
+                info_dict[key] = info
                 if key == "住址":
                     addrs = getAddr(data)
                     for addr in addrs:
-                        info_dict["住址"] = info_dict["住址"] + addr
-                break  # 匹配成功后跳出内层循环
+                        info = info_dict["住址"] + addr
+                        if len(info) > len(info_dict["住址"]):
+                            info_dict["住址"] = info
             elif key == "出生":
                 match = re.search(pattern, allStr)
                 if match:
@@ -158,17 +153,19 @@ def findResultReserve(data, allStr):
             # 使用正则表达式匹配对应项
             match = re.match(pattern2, item)
             if match:
-                if key2 == '有效期限':
-                    info_dict = getYxqx(item, key2, info_dict)
-                else:
-                    # 如果匹配成功，直接将信息存储到字典中
-                    info_dict[key2] = item
-                break  # 匹配成功后跳出内层循环
+                # 如果匹配成功，直接将信息存储到字典中
+                info_dict[key2] = item
         if len(item) > 17 and item.isdigit():
             info_dict["公民身份号码"] = item
 
     if info_dict["姓名"] == "":
         info_dict["姓名"] = getName(data)
+
+    if info_dict["民族"] == "":
+        info_dict["民族"] = "汉"
+
+    if len(info_dict["有效期限"]) == 16:
+        info_dict = getYxqx(info_dict["有效期限"], "有效期限", info_dict)
 
     return info_dict
 
@@ -196,47 +193,28 @@ def getName(data):
     return name
 
 
-def find_long_number(lst):
-    for item in lst:
-        if len(item) > 17 and item.isdigit():
-            return item
-
-
-def pretreatment(data):
+def extract_info(text):
     keywords = ["姓名", "民族", "性别", "出生", "住址", "签发机关", "有效期限", "公民身份号码"]
+    info_dict = {"姓名": "", "民族": "", "性别": "", "出生": "",
+                 "住址": "", "签发机关": "", "公民身份号码": ""}
+    words = text.split()
 
-    new_data = []
-    i = 0
-    while i < len(data):
-        item = data[i]
-        prev_item = ''
-        for keyword in keywords:
-            if keyword in item:
-                # 分割关键字前后的内容
-                split_index = item.find(keyword)
-                left_part = item[:split_index].strip()
+    for i, word in enumerate(words):
+        if word in keywords:
+            key = word
+            try:
+                # 寻找下一个关键词的位置，即当前值的结束位置
+                end_index = words.index(keywords[keywords.index(key) + 1], i + 1)
+            except ValueError:
+                # 如果当前关键词是列表中的最后一个，则取至文本末尾
+                end_index = len(words)
 
-                # 处理粘连的关键字
-                while keyword in item[split_index + len(keyword):]:
-                    next_split_index = item[split_index + len(keyword):].find(keyword)
-                    next_split_index += split_index + len(keyword)
-                    right_part = item[split_index + len(keyword):next_split_index]
-                    new_data.append(f"{prev_item}{right_part.strip()}")
+            value_words = words[i + 1:end_index]
+            value = " ".join(value_words).strip()  # 合并值部分，并移除多余空格
 
-                    item = item[next_split_index:]
-                    split_index = 0
+            info_dict[key] = value
 
-                right_part = item[split_index + len(keyword):].strip()
-                new_data.append(f"{keyword}{left_part}")
-                new_data.append(f"{keyword}{right_part}")
-                i += 1
-                break
-        else:
-            # 非关键字项或标准格式的项，原样添加
-            new_data.append(item)
-            i += 1
-
-    return new_data
+    return info_dict
 
 
 if __name__ == "__main__":
