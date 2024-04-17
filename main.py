@@ -2,6 +2,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from io import BytesIO
 from minio import Minio
 from paddleocr import PaddleOCR
+from paddlenlp import Taskflow
 from pydantic import BaseModel
 import time
 import uvicorn
@@ -40,7 +41,7 @@ async def ocrIdCard(id_card_images: IdCardImages):
     idCardFront = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardFront)
     idCardBack = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardBack)
     img_paths = [idCardFront, idCardBack]
-    dataList = []
+    # dataList = []
     allStr = ""
     for img_path in img_paths:
         result = ocr.ocr(img_path, cls=True)
@@ -50,14 +51,15 @@ async def ocrIdCard(id_card_images: IdCardImages):
                 data = line[1][0]
                 Str = getInformation(data)
                 if Str != '':
-                    dataList.append(Str)
+                    # dataList.append(Str)
                     allStr = allStr + Str
 
-    resultDict = findResultReserve(dataList, allStr + "中国")
+    # resultDict = findResultReserve(dataList, allStr)
+    resultDict_NLP = findResultNlp(allStr)
     end_time = time.time()
     total_time = end_time - start_time
 
-    return {"data": resultDict, "msg": "总耗时：{} 秒".format(total_time), "test": allStr}
+    return {"data": resultDict_NLP, "msg": "总耗时：{} 秒".format(total_time), "test": allStr}
 
 
 # 路由接口，接收上传的文件列表并上传到 MinIO
@@ -91,61 +93,15 @@ async def upload_files(idCardFront: UploadFile = File(...), idCardBack: UploadFi
         raise HTTPException(status_code=500, detail=str(err))
 
 
-def getInformation(data):
-    filtered_data = removePY(data)
-    NoneSpaceStr = removeSpace(filtered_data)
-    NonePunctuationStr = removePunctuation(NoneSpaceStr)
-    return NonePunctuationStr
-
-
-def removePY(data):
-    filtered_data = ''
-    idx = 0
-    while idx < len(data):
-        char = data[idx]
-        if char.upper() in 'QWERTYUIOPASDFGHJKLZXCVBNM':
-            # 如果是英文字母但不是大写字母表中的字母
-            if idx == 17 and data[idx - 17:idx].isdigit():
-                # 如果前面有17位数字，则保留
-                filtered_data += char
-            else:
-                # 如果前面不是17位数字，则跳过
-                pass
-            idx += 1
-        else:
-            # 如果不是英文字母，保留
-            filtered_data += char
-            idx += 1
-    return filtered_data
-
-
-def removeSpace(long_str):
-    noneSpaceStr = ''
-    str_arry = long_str.split()
-    for x in range(0, len(str_arry)):
-        noneSpaceStr = noneSpaceStr + str_arry[x]
-    return noneSpaceStr
-
-
-def removePunctuation(noneSpaceStr):
-    punctuation = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~“”？，！『【】（）、。：；’‘……￥·"""
-    s = noneSpaceStr
-    dicts = {i: '' for i in punctuation}
-    punc_table = str.maketrans(dicts)
-    nonePunctuationStr = s.translate(punc_table)
-    return nonePunctuationStr
-
-
-def getYxqx(item, keyword, info_dict):
-    # 第一个有效期限
-    date_str1 = item.replace(keyword, "").strip()[:8]
-    formatted_date1 = f"{date_str1[:4]}-{date_str1[4:6]}-{date_str1[6:8]}"
-    info_dict["有效期限1"] = formatted_date1
-    # 第二个有效期限
-    date_str2 = item.replace(keyword, "").strip()[8:16]
-    formatted_date2 = f"{date_str2[:4]}-{date_str2[4:6]}-{date_str2[6:8]}"
-    info_dict["有效期限2"] = formatted_date2
-    return info_dict
+def findResultNlp(allStr):
+    data = {}
+    schema = ["姓名", "民族", "性别", "出生", "住址", "签发机关", "有效期限", "公民身份号码"]
+    ie = Taskflow('information_extraction', schema=schema)
+    res = ie(allStr)
+    for key in schema:
+        data[key] = res[0][key][0]['text']
+    getYxqx(data['有效期限'], data)
+    return data
 
 
 def findResultReserve(data, allStr):
@@ -207,9 +163,54 @@ def findResultReserve(data, allStr):
         info_dict["民族"] = "汉"
 
     if len(info_dict["有效期限"]) == 16:
-        info_dict = getYxqx(info_dict["有效期限"], "有效期限", info_dict)
+        info_dict = getYxqx(info_dict["有效期限"], info_dict)
 
     return info_dict
+
+
+def getInformation(data):
+    filtered_data = removePY(data)
+    NoneSpaceStr = removeSpace(filtered_data)
+    NonePunctuationStr = removePunctuation(NoneSpaceStr)
+    return NonePunctuationStr
+
+
+def removePY(data):
+    filtered_data = ''
+    idx = 0
+    while idx < len(data):
+        char = data[idx]
+        if char.upper() in 'QWERTYUIOPASDFGHJKLZXCVBNM':
+            # 如果是英文字母但不是大写字母表中的字母
+            if idx == 17 and data[idx - 17:idx].isdigit():
+                # 如果前面有17位数字，则保留
+                filtered_data += char
+            else:
+                # 如果前面不是17位数字，则跳过
+                pass
+            idx += 1
+        else:
+            # 如果不是英文字母，保留
+            filtered_data += char
+            idx += 1
+    return filtered_data
+
+
+def removeSpace(long_str):
+    noneSpaceStr = ''
+    str_arry = long_str.split()
+    for x in range(0, len(str_arry)):
+        noneSpaceStr = noneSpaceStr + str_arry[x]
+    return noneSpaceStr
+
+
+def removePunctuation(noneSpaceStr):
+    punctuation = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~“”？，！『【】（）、。：；’‘……￥·"""
+    s = noneSpaceStr
+    dicts = {i: '' for i in punctuation}
+    punc_table = str.maketrans(dicts)
+    nonePunctuationStr = s.translate(punc_table)
+    return nonePunctuationStr
 
 
 def getAddr(data):
@@ -233,6 +234,18 @@ def getName(data):
     pattern = re.compile(r'^(?!.*姓名).{2,4}$')  # 不包含"姓名"两个字，字符数为2到4的正则表达式
     name = next((item for item in data if re.match(pattern, item)), None)
     return name
+
+
+def getYxqx(item, info_dict):
+    # 第一个有效期限
+    date_str1 = item.strip()[:8]
+    formatted_date1 = f"{date_str1[:4]}-{date_str1[4:6]}-{date_str1[6:8]}"
+    info_dict["有效期限1"] = formatted_date1
+    # 第二个有效期限
+    date_str2 = item.strip()[8:16]
+    formatted_date2 = f"{date_str2[:4]}-{date_str2[4:6]}-{date_str2[6:8]}"
+    info_dict["有效期限2"] = formatted_date2
+    return info_dict
 
 
 def extract_info(text):
