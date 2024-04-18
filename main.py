@@ -4,6 +4,7 @@ from minio import Minio
 from paddleocr import PaddleOCR
 from paddlenlp import Taskflow
 from pydantic import BaseModel
+from typing import Dict
 import time
 import uvicorn
 import re
@@ -18,10 +19,10 @@ minio_client = Minio(
 )
 
 app = FastAPI()
-ocrName = "ocr/"
+ocrName = "ocr"
 
 
-class IdCardImages(BaseModel):
+class images(BaseModel):
     idCardFront: str
     idCardBack: str
 
@@ -33,15 +34,34 @@ cls_model_dir = '.\\cls_model'
 
 
 # ocr
-@app.post("/{}{}".format(ocrName, "id_card"))
-async def ocrIdCard(id_card_images: IdCardImages):
+@app.post("/{}/{}".format(ocrName, "idcard"))
+async def ocrIdCard(imageList: images):
+    start_time = time.time()
+    idCardFront = "http://10.10.101.2:9000/lzc-ocr/imgCache/{}.jpg".format(imageList.idCardFront)
+    idCardBack = "http://10.10.101.2:9000/lzc-ocr/imgCache/{}.jpg".format(imageList.idCardBack)
+    img_paths = [idCardFront, idCardBack]
+    flag = 'idcard'
+    res = ocrStart(img_paths, flag)
+    end_time = time.time()
+    total_time = end_time - start_time
+    return {"data": res, "msg": "总耗时：{} 秒".format(total_time)}
+
+
+@app.post("/{}/{}".format(ocrName, "excel"))
+async def ocrExcel(excel_data: Dict[str, str]):
+    start_time = time.time()
+    excel = "http://10.10.101.2:9000/lzc-ocr/imgCache/{}.jpg".format(excel_data.get("excelImage"))
+    img_paths = [excel]
+    flag = 'excel'
+    res = ocrStart(img_paths, flag)
+    end_time = time.time()
+    total_time = end_time - start_time
+    return {"data": res, "msg": "总耗时：{} 秒".format(total_time)}
+
+
+def ocrStart(img_paths, flag):
     PaddleOCR(det_model_dir=det_model_dir, rec_model_dir=rec_model_dir, cls_model_dir=cls_model_dir)
     ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=False, use_mp=True)
-    start_time = time.time()
-    idCardFront = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardFront)
-    idCardBack = "http://10.10.101.2:9000/lzc-ocr/idCard/{}.jpg".format(id_card_images.idCardBack)
-    img_paths = [idCardFront, idCardBack]
-    # dataList = []
     allStr = ""
     for img_path in img_paths:
         result = ocr.ocr(img_path, cls=True)
@@ -51,57 +71,116 @@ async def ocrIdCard(id_card_images: IdCardImages):
                 data = line[1][0]
                 Str = getInformation(data)
                 if Str != '':
-                    # dataList.append(Str)
                     allStr = allStr + Str
 
-    # resultDict = findResultReserve(dataList, allStr)
-    resultDict_NLP = findResultNlp(allStr)
-    end_time = time.time()
-    total_time = end_time - start_time
-
-    return {"data": resultDict_NLP, "msg": "总耗时：{} 秒".format(total_time), "test": allStr}
+    return findResultNlp(allStr, flag)
 
 
 # 路由接口，接收上传的文件列表并上传到 MinIO
-@app.post("/{}{}".format(ocrName, "upload"))
-async def upload_files(idCardFront: UploadFile = File(...), idCardBack: UploadFile = File(...)):
-    try:
-        files = [idCardFront, idCardBack]
-        cardIDs = {"idCardFront": "", "idCardBack": ""}
-        for file in files:
-            # 读取上传的文件内容
-            file_content = await file.read()
-            # 将文件内容封装为文件对象
-            file_object = BytesIO(file_content)
-            # 生成文件名
-            cardID = uuid.uuid4()
-            if file.filename == idCardFront.filename:
-                cardIDs['idCardFront'] = cardID
-            else:
-                cardIDs['idCardBack'] = cardID
-            # 上传文件到 MinIO
-            minio_client.put_object(
-                'lzc-ocr',
-                '/idCard/{}.jpg'.format(cardID),
-                file_object,
-                length=len(file_content),
-                content_type=file.content_type
-            )
-
-        return {"data": cardIDs, "message": "Files uploaded successfully."}
-    except HTTPException as err:
-        raise HTTPException(status_code=500, detail=str(err))
+@app.post("/{}/{}/{}".format(ocrName, "upload", "idcard"))
+async def upload_idcard(idCardFront: UploadFile = File(...), idCardBack: UploadFile = File(...)):
+    idCardFront.filename = "idCardFront"
+    idCardBack.filename = "idCardBack"
+    files = [idCardFront, idCardBack]
+    res = await upload(files)  # 使用 await 调用协程函数
+    return {"data": res, "msg": "上传成功"}
 
 
-def findResultNlp(allStr):
+@app.post("/{}/{}/{}".format(ocrName, "upload", "excel"))
+async def upload_excel(excelImages: UploadFile = File(...)):
+    excelImages.filename = "excelImages"
+    files = [excelImages]
+    res = await upload(files)  # 使用 await 调用协程函数
+    return {"data": res, "msg": "上传成功"}
+
+
+async def upload(files):
+    ids = {}
+    for file in files:
+        # 读取上传的文件内容
+        file_content = await file.read()
+        # 将文件内容封装为文件对象
+        file_object = BytesIO(file_content)
+        # 生成文件名
+        img_id = uuid.uuid4()
+        if file.filename == 'idCardFront':
+            ids['idCardFront'] = img_id
+        elif file.filename == 'idCardBack':
+            ids['idCardBack'] = img_id
+        elif file.filename == 'excelImages':
+            ids['excelImages'] = img_id
+
+        # 上传文件到 MinIO
+        minio_client.put_object(
+            'lzc-ocr',
+            '/imgCache/{}.jpg'.format(img_id),
+            file_object,
+            length=len(file_content),
+            content_type=file.content_type
+        )
+    return ids
+
+
+def findResultNlp(allStr, flag):
     data = {}
-    schema = ["姓名", "民族", "性别", "出生", "住址", "签发机关", "有效期限", "公民身份号码"]
-    ie = Taskflow('information_extraction', schema=schema)
-    res = ie(allStr)
-    for key in schema:
-        data[key] = res[0][key][0]['text']
-    getYxqx(data['有效期限'], data)
+    if flag == 'idcard':
+        schema = ["姓名", "民族", "性别", "出生", "住址", "签发机关", "有效期限", "公民身份号码"]
+        ie = Taskflow('information_extraction', schema=schema)
+        res = ie(allStr)
+        for key in schema:
+            data[key] = res[0][key][0]['text']
+        if flag == 'idcard':
+            getYxqx(data['有效期限'], data)
+    else:
+        schema = ["产品", "第1季度", "第2季度", "总计"]
+        ie = Taskflow('information_extraction', schema=schema)
+        data = ie(allStr)
     return data
+
+
+def getInformation(data):
+    filtered_data = removePY(data)
+    NoneSpaceStr = removeSpace(filtered_data)
+    NonePunctuationStr = removePunctuation(NoneSpaceStr)
+    return NonePunctuationStr
+
+
+def removePY(data):
+    filtered_data = ''
+    idx = 0
+    while idx < len(data):
+        char = data[idx]
+        if char.upper() in 'QWERTYUIOPASDFGHJKLZXCVBNM':
+            # 如果是英文字母但不是大写字母表中的字母
+            if idx == 17 and data[idx - 17:idx].isdigit():
+                # 如果前面有17位数字，则保留
+                filtered_data += char
+            else:
+                # 如果前面不是17位数字，则跳过
+                pass
+            idx += 1
+        else:
+            # 如果不是英文字母，保留
+            filtered_data += char
+            idx += 1
+    return filtered_data
+
+
+def removeSpace(long_str):
+    noneSpaceStr = ''
+    str_arry = long_str.split()
+    for x in range(0, len(str_arry)):
+        noneSpaceStr = noneSpaceStr + str_arry[x]
+    return noneSpaceStr
+
+
+def removePunctuation(noneSpaceStr):
+    punctuation = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~“”？，！『【】（）、。：；’‘……￥·"""
+    s = noneSpaceStr
+    dicts = {i: '' for i in punctuation}
+    punc_table = str.maketrans(dicts)
+    nonePunctuationStr = s.translate(punc_table)
+    return nonePunctuationStr
 
 
 def findResultReserve(data, allStr):
@@ -166,51 +245,6 @@ def findResultReserve(data, allStr):
         info_dict = getYxqx(info_dict["有效期限"], info_dict)
 
     return info_dict
-
-
-def getInformation(data):
-    filtered_data = removePY(data)
-    NoneSpaceStr = removeSpace(filtered_data)
-    NonePunctuationStr = removePunctuation(NoneSpaceStr)
-    return NonePunctuationStr
-
-
-def removePY(data):
-    filtered_data = ''
-    idx = 0
-    while idx < len(data):
-        char = data[idx]
-        if char.upper() in 'QWERTYUIOPASDFGHJKLZXCVBNM':
-            # 如果是英文字母但不是大写字母表中的字母
-            if idx == 17 and data[idx - 17:idx].isdigit():
-                # 如果前面有17位数字，则保留
-                filtered_data += char
-            else:
-                # 如果前面不是17位数字，则跳过
-                pass
-            idx += 1
-        else:
-            # 如果不是英文字母，保留
-            filtered_data += char
-            idx += 1
-    return filtered_data
-
-
-def removeSpace(long_str):
-    noneSpaceStr = ''
-    str_arry = long_str.split()
-    for x in range(0, len(str_arry)):
-        noneSpaceStr = noneSpaceStr + str_arry[x]
-    return noneSpaceStr
-
-
-def removePunctuation(noneSpaceStr):
-    punctuation = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~“”？，！『【】（）、。：；’‘……￥·"""
-    s = noneSpaceStr
-    dicts = {i: '' for i in punctuation}
-    punc_table = str.maketrans(dicts)
-    nonePunctuationStr = s.translate(punc_table)
-    return nonePunctuationStr
 
 
 def getAddr(data):
