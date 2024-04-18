@@ -1,14 +1,16 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile
 from io import BytesIO
 from minio import Minio
 from paddleocr import PaddleOCR
+from paddleocr import PPStructure
 from paddlenlp import Taskflow
 from pydantic import BaseModel
-from typing import Dict
 import time
+import cv2
 import uvicorn
 import re
 import uuid
+import numpy as np
 
 # minio
 minio_client = Minio(
@@ -20,6 +22,8 @@ minio_client = Minio(
 
 app = FastAPI()
 ocrName = "ocr"
+
+table_engine = PPStructure(show_log=True)
 
 
 class images(BaseModel):
@@ -47,13 +51,10 @@ async def ocrIdCard(imageList: images):
     return {"data": res, "msg": "总耗时：{} 秒".format(total_time)}
 
 
-@app.post("/{}/{}".format(ocrName, "excel"))
-async def ocrExcel(excel_data: Dict[str, str]):
+@app.post("/{}/{}".format(ocrName, "table"))
+async def ocrExcel(table_data: UploadFile):
     start_time = time.time()
-    excel = "http://10.10.101.2:9000/lzc-ocr/imgCache/{}.jpg".format(excel_data.get("excelImage"))
-    img_paths = [excel]
-    flag = 'excel'
-    res = ocrStart(img_paths, flag)
+    res = await structure_table(table_data)
     end_time = time.time()
     total_time = end_time - start_time
     return {"data": res, "msg": "总耗时：{} 秒".format(total_time)}
@@ -74,6 +75,28 @@ def ocrStart(img_paths, flag):
                     allStr = allStr + Str
 
     return findResultNlp(allStr, flag)
+
+
+async def structure_table(file: UploadFile):
+    data = []
+    res = ""
+    # 读取上传的文件内容
+    contents = await file.read()
+    # 将文件内容加载到OpenCV中
+    img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+    result = table_engine(img)
+    for line in result:
+        line.pop('img')
+        data.append(line)
+        print(line)
+    # 处理
+    for datum in data[0]['res']:
+        text = removePunctuation(datum['text'])
+        removeSpace(text)
+        if text != '':
+            res = res + text
+    # 推理
+    return findResultNlp(res, "table")
 
 
 # 路由接口，接收上传的文件列表并上传到 MinIO
@@ -131,10 +154,12 @@ def findResultNlp(allStr, flag):
             data[key] = res[0][key][0]['text']
         if flag == 'idcard':
             getYxqx(data['有效期限'], data)
-    else:
-        schema = ["产品", "第1季度", "第2季度", "总计"]
+    elif flag == 'table':
+        schema = ["姓名", "民族", "性别", "出生", "住址", "公民身份号码"]
         ie = Taskflow('information_extraction', schema=schema)
-        data = ie(allStr)
+        res = ie(allStr)
+        for key in schema:
+            data[key] = res[0][key][0]['text']
     return data
 
 
@@ -175,7 +200,7 @@ def removeSpace(long_str):
 
 
 def removePunctuation(noneSpaceStr):
-    punctuation = r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~“”？，！『【】（）、。：；’‘……￥·"""
+    punctuation = r"""!"#$%&'()*+,-/:;<=>?@[\]^_`{|}~“”▼？，！『【】（）、。：；’‘……￥¥· """
     s = noneSpaceStr
     dicts = {i: '' for i in punctuation}
     punc_table = str.maketrans(dicts)
