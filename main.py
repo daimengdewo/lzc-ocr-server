@@ -200,7 +200,7 @@ def removeSpace(long_str):
 
 
 def removePunctuation(noneSpaceStr):
-    punctuation = r"""!"#$%&'()*+,-/:;<=>?@[\]^_`{|}~“”▼？，！『【】（）、。：；’‘……￥¥· """
+    punctuation = r"""!"#$%&'()*+,-/:;<=>?@[\]^_`{|}~“”▼？，！『【】（）、。.：；’‘……￥¥· """
     s = noneSpaceStr
     dicts = {i: '' for i in punctuation}
     punc_table = str.maketrans(dicts)
